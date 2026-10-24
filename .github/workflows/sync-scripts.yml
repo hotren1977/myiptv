@@ -1,0 +1,59 @@
+name: 同步上游脚本
+
+# 只同步“脚本”，运行结果一律不动：
+#   同步：.github/workflows/、main.py、assets/whitelist-blacklist/main.py
+#   不动：live*.m3u/txt、e.xml、e.xml.gz、assets/*.txt、logo/ 等
+# 上游：CCSH/IPTV（main 分支）
+# 注意：同步脚本自身（sync-scripts.yml）不会被上游覆盖或删除。
+
+"on":
+  schedule:
+    # 每天 02:00 北京时间（UTC 18:00）
+    - cron: '0 18 * * *'
+  workflow_dispatch:  # 手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  sync-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 同步上游脚本
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/CCSH/IPTV.git 2>/dev/null || true
+          git fetch upstream main
+
+          SYNC_FILE=".github/workflows/sync-scripts.yml"
+          SCRIPT_PATHS=(
+            ".github/workflows"
+            "main.py"
+            "assets/whitelist-blacklist/main.py"
+          )
+
+          # 上游新增/修改的脚本（--no-renames：避免删旧加新被误判为重命名，导致旧文件残留）
+          mapfile -t CHANGED < <(git diff --no-renames --name-only --diff-filter=ACMRT HEAD upstream/main -- "${SCRIPT_PATHS[@]}")
+          # 上游已删除的脚本（排除同步脚本自身）
+          mapfile -t DELETED < <(git diff --no-renames --name-only --diff-filter=D HEAD upstream/main -- "${SCRIPT_PATHS[@]}" | grep -v "^${SYNC_FILE}$" || true)
+
+          if ((${#CHANGED[@]})); then
+            git checkout upstream/main -- "${CHANGED[@]}"
+          fi
+          if ((${#DELETED[@]})); then
+            git rm -q -- "${DELETED[@]}"
+          fi
+
+          if git diff --cached --quiet; then
+            echo "脚本已是最新，无需同步"
+          else
+            git commit -m "chore: 同步上游脚本 $(date -u '+%Y-%m-%d')"
+            git push
+            echo "已同步上游脚本"
+          fi
